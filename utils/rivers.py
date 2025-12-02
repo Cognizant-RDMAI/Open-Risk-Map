@@ -29,7 +29,7 @@ def add_location_on_river_and_closest_edge(
     -------
     tuple[pd.Series, pd.Series, pd.Series]
         A tuple containing Series of the closest points, edges on the river
-        network, and the riverID.
+        network, and the river flow.
     """
 
     def find_shortest_line(
@@ -57,7 +57,7 @@ def add_location_on_river_and_closest_edge(
     rivers["closestEdge"] = rivers.geometry.copy()
     nearest_point_info = gpd.sjoin_nearest(
         gdf,
-        rivers[["geometry", "riverID", "closestEdge"]],
+        rivers[["geometry", "flow", "closestEdge"]],
         max_distance=max_dist_from_river,
         how="left",
     )
@@ -79,13 +79,11 @@ def add_location_on_river_and_closest_edge(
     return (
         nearest_point_info["closestPoint"],
         nearest_point_info["closestEdge"],
-        nearest_point_info["riverID"],
+        nearest_point_info["flow"],
     )
 
 
-def river_to_graph(
-    rivers: gpd.GeoDataFrame, directed: bool
-) -> nx.DiGraph | nx.Graph:
+def river_to_graph(rivers: gpd.GeoDataFrame) -> nx.DiGraph:
     """
     Convert a GeoDataFrame of rivers into a NetworkX graph.
 
@@ -93,20 +91,18 @@ def river_to_graph(
     ----------
     rivers : gpd.GeoDataFrame
         GeoDataFrame containing river data.
-    directed : bool
-        Indicates whether the resulting graph should be directed.
 
     Returns
     -------
     nx.Graph
         The NetworkX graph representing the river network.
     """
-    river_graph = momepy.gdf_to_nx(
+    river_graph: nx.DiGraph = momepy.gdf_to_nx(
         rivers,
         approach="primal",
-        directed=directed,  # To indicate flow direction
+        directed=True,  # To indicate flow direction
         multigraph=False,
-    )
+    )  # type: ignore
 
     # Create a dictionary to store edge IDs for each node
     node_edge_ids = defaultdict(set)
@@ -114,18 +110,27 @@ def river_to_graph(
     # Populate the dictionary by iterating over edges
     for u, v, data in river_graph.edges(data=True):
         edge_id = data.get("riverID")
-        node_edge_ids[u].add(edge_id)
-        node_edge_ids[v].add(edge_id)
+        edge_flow = data.get("flow", 0.0)
+        river_graph.nodes[u]["flow"] = max(
+            river_graph.nodes[u].get("flow", 0.0), edge_flow
+        )
+        river_graph.nodes[v]["flow"] = max(
+            river_graph.nodes[v].get("flow", 0.0), edge_flow
+        )
+        if edge_id is not None:
+            node_edge_ids[u].add(edge_id)
+            node_edge_ids[v].add(edge_id)
     nx.set_node_attributes(river_graph, node_edge_ids, name="riverID")
     return river_graph
 
 
 def split_rivers(
-    rivers: gpd.GeoDataFrame, resolution: float, river_df_id_col: str
+    rivers: gpd.GeoDataFrame, resolution: float
 ) -> gpd.GeoDataFrame:
     """
     Split a GeoDataFrame of LineStrings into smaller LineStrings of a
-    specified maximum resolution.
+    specified maximum resolution. The function assumes that the rivers
+    has a 'riverID' column to identify each river segment.
 
     Parameters
     ----------
@@ -133,8 +138,6 @@ def split_rivers(
         The input GeoDataFrame containing LineStrings.
     resolution : float
         The desired maximum resolution to split the LineStrings.
-    river_df_id_col : str
-        The column name containing unique river IDs.
 
     Returns
     -------
@@ -146,19 +149,22 @@ def split_rivers(
 
     # Check if anything given is not a LineString
     if rivers2.geometry.apply(
-        lambda x: not isinstance(x, shapely.LineString)
+        lambda x: not isinstance(
+            x, (shapely.LineString, shapely.MultiLineString)
+        )
     ).any():
         raise Exception(
             "riversdf has other geometries. This function only works on"
-            "linestrings"
+            "LineStrings and MultiLineStrings"
         )
+    rivers2 = rivers2.explode(
+        "geometry"
+    )  # To convert MultiLineStrings to LineStrings
 
     def split_linestring(line: shapely.LineString) -> list[shapely.LineString]:
-        points: np.ndarray[shapely.Point] = shapely.line_interpolate_point(
+        points = shapely.line_interpolate_point(
             line,
             np.arange(0, line.length, resolution),
-            # np.linspace(0,1,n_divisions),
-            # normalized=True,
         )
 
         endpoint = shapely.Point(line.coords[-1])
@@ -172,13 +178,13 @@ def split_rivers(
 
     rivers2["geometry2"] = rivers2.geometry.apply(split_linestring)
 
-    rivers2 = rivers2[["riverID", "geometry2"]].explode("geometry2")
+    rivers2 = rivers2[["riverID", "flow", "geometry2"]].explode("geometry2")
     rivers2.rename(columns={"geometry2": "geometry"}, inplace=True)
 
     rivers2.geometry = rivers2.geometry.astype("geometry")
     rivers2 = gpd.GeoDataFrame(rivers2)
     rivers2.geometry = rivers2.geometry.set_crs(rivers.crs)
-    rivers2.reset_index(inplace=True)
+    rivers2.reset_index(inplace=True, drop=True)
     return rivers2
 
 
