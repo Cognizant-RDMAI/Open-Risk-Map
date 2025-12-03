@@ -5,6 +5,17 @@ data/*.*
 data/*/*
 cache/
 wbe/
+output/
+
+# Datasets
+!data/crop_categories.csv
+!data/soil_host_data.zip
+!data/soil_lookup.csv
+!data/agriculture_load_lookup.csv
+!data/livestock_lookup.csv
+!data/livestock_excreta_load.csv
+!data/livestock_excreta.csv
+!data/road_width_lookup.csv
 
 # Vscode
 .vscode/
@@ -17,6 +28,9 @@ __pycache__/
 
 # C extensions
 *.so
+
+# uv
+uv*
 
 # Distribution / packaging
 .Python
@@ -37,6 +51,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.DS_Store
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

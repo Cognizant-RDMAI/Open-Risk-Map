@@ -1,0 +1,16 @@
+classification,width
+Local Road,4.0
+A Road,7.0
+Minor Road,5.0
+B Road,6.0
+Restricted Local Access Road,3.0
+"Primary Road, Collapsed Dual Carriageway",5.0
+"A Road, Collapsed Dual Carriageway",15.0
+Primary Road,5.0
+Local Access Road,3.0
+"B Road, Collapsed Dual Carriageway",20.0
+Shared Use Carriageway,6.0
+"Minor Road, Collapsed Dual Carriageway",5.0
+"Motorway, Collapsed Dual Carriageway",37.0
+Motorway,37.0
+Guided Busway Carriageway,5.0

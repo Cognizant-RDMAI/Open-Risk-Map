@@ -5,6 +5,7 @@ import pathlib
 import subprocess
 import zipfile
 
+import fiona
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -15,14 +16,14 @@ from OSGridConverter import grid2latlong
 
 # Configure logger
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler()
-formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-handler.setFormatter(formatter)
-logger.addHandler(handler)
 
-DATA_DIR: pathlib.Path = pathlib.Path(__file__).parent.joinpath("data")
-OUTPUT_ESPG: int = 27700
+DATA_DIR: pathlib.Path = pathlib.Path(
+    os.path.relpath(
+        pathlib.Path(__file__).parent.joinpath("data"),
+        pathlib.Path.cwd(),
+    )
+)
+OUTPUT_EPSG: int = 27700
 
 
 def get_lat_lon(x):
@@ -102,14 +103,18 @@ def get_cso_annual_data(repeat: bool = False) -> gpd.GeoDataFrame:
         annual = pd.concat(df.values())
 
         # Set the location of the CSOs according to the data
-        ngrs = annual["Outlet Discharge NGR\n(EA Consents Database)"].apply(
-            lambda x: x.split(" ")[0].split(",")[0]
-        )  # Choose only the first NGR
-        annual["geometry"] = ngrs.apply(get_lat_lon)
+        ngrs = (
+            annual["Outlet Discharge NGR\n(EA Consents Database)"]
+            .str.split(" ")
+            .str[0]
+            .str.split(",")
+            .str[0]
+        )
+        annual["geometry"] = ngrs.map(get_lat_lon)
 
         annual = gpd.GeoDataFrame(
             annual, geometry="geometry", crs="EPSG:4326"
-        ).to_crs(epsg=OUTPUT_ESPG)
+        ).to_crs(epsg=OUTPUT_EPSG)
 
         for col in annual.columns:
             if annual[col].dtype == "object":
@@ -141,8 +146,8 @@ def get_consents_data(
     """
     os.makedirs(DATA_DIR.joinpath("consentsdb"), exist_ok=True)
     consentsdb_path = DATA_DIR.joinpath("consentsdb")
-    consents_path = pathlib.Path.joinpath(consentsdb_path, "consents.csv")
-    det_path = pathlib.Path.joinpath(consentsdb_path, "determinands.csv")
+    consents_path = consentsdb_path.joinpath("consents.csv")
+    det_path = consentsdb_path.joinpath("determinands.csv")
 
     if (
         os.path.exists(consents_path)
@@ -242,21 +247,39 @@ def get_rivers_data(repeat: bool = False) -> gpd.GeoDataFrame:
     gpd.GeoDataFrame
         The rivers data as a GeoDataFrame from ORN
     """
-    if os.path.exists(DATA_DIR.joinpath("rivers.geojson")) and not repeat:
+    if os.path.exists(DATA_DIR.joinpath("rivers.parquet")) and not repeat:
         logger.info("Rivers data found")
-        return gpd.read_file(DATA_DIR.joinpath("rivers.geojson"))
+        return gpd.read_parquet(DATA_DIR.joinpath("rivers.parquet"))
     logger.info("Downloading rivers data...")
     try:
         rivers = gpd.read_file(
             "https://openrivers.net/download/ORN_v2_GeoPackage.zip",
             layer="ORN",
         )
-        rivers.to_crs(epsg="27700", inplace=True)
-        rivers.to_file(DATA_DIR.joinpath("rivers.geojson"))
+        rivers.to_crs(epsg=OUTPUT_EPSG, inplace=True)
+        rivers.to_parquet(DATA_DIR.joinpath("rivers.parquet"))
         logger.info("Rivers data downloaded and transformed")
     except Exception as e:
-        logger.error(f"Failed to download or transform rivers data: {e}")
-        raise
+        logger.error(
+            f"Failed to download or transform rivers data: {e}, trying alternate method"
+        )
+        try:
+            req = requests.get(
+                "https://openrivers.net/download/ORN_v2_GeoPackage.zip",
+                allow_redirects=True,
+                timeout=1000,
+                verify=False,
+            )
+            b = bytes(req.content)
+            with fiona.BytesCollection(b, layer="ORN") as f:
+                crs = f.crs
+                rivers = gpd.GeoDataFrame.from_features(f, crs=crs)
+            rivers = rivers.to_crs(epsg=OUTPUT_EPSG)
+            rivers.to_parquet(DATA_DIR.joinpath("rivers.parquet"))
+            logger.info("Rivers data downloaded and transformed")
+        except Exception as e:
+            logger.error(f"Alternate method failed: {e}")
+            raise e
     return rivers
 
 
@@ -278,19 +301,17 @@ def consents_transform(df: pd.DataFrame) -> gpd.GeoDataFrame:
         subset=["PERMIT_NUMBER", "OUTLET_GRID_REF"], keep="first"
     )
     df = df.assign(
-        ID=df.apply(
-            lambda x: str(
-                x["PERMIT_NUMBER"]
-                + "_"
-                + str(x["EFFLUENT_NUMBER"])
-                + "_"
-                + str(x["OUTLET_NUMBER"])
-            ),
-            axis=1,
+        ID=(
+            df["PERMIT_NUMBER"].astype(str)
+            + "_"
+            + df["EFFLUENT_NUMBER"].astype(str)
+            + "_"
+            + df["OUTLET_NUMBER"].astype(str)
         )
     )
+
     df.set_index("ID", inplace=True)
-    df = df.assign(OUTLET_LOC=df["OUTLET_GRID_REF"].apply(get_lat_lon))
+    df = df.assign(OUTLET_LOC=df["OUTLET_GRID_REF"].map(get_lat_lon))
     df["geometry"] = df["OUTLET_LOC"].copy(deep=True)
     gdf = gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
     gdf = gdf.to_crs(epsg=27700)
@@ -403,12 +424,17 @@ def split_consents(
         15,  # Into land then to watercourse
     ]
     wwtws = consents[
-        (consents["DISCHARGE_SITE_TYPE_CODE"] == "A2")
-        & (consents["EFFLUENT_TYPE"] == "SA")
-        & (
-            (consents["OUTLET_TYPE_CODE"] == "S")
-            | (consents["OUTLET_TYPE_CODE"] == "U")
-        )
+        (
+            (consents["DISCHARGE_SITE_TYPE_CODE"] == "A2")
+            & (consents["EFFLUENT_TYPE"] == "SA")
+            & (
+                (consents["OUTLET_TYPE_CODE"] == "S")
+                | (consents["OUTLET_TYPE_CODE"] == "U")
+            )
+        )  # Including the water company treatment works
+        | (
+            consents["DISCHARGE_SITE_TYPE_CODE"].isin(["A0", "A1"])
+        )  # Including the private treatment works
         & (consents["RECEIVING_ENVIRON_TYPE_CODE"].isin(rec_env_codes))
     ]
     wwtws = consents_transform(wwtws)
@@ -550,6 +576,87 @@ def transform_data(
     return csos_merged, wwtws, determinands
 
 
+def get_OS_data(repeat: bool = False):
+    """
+    This function queries the Ordinance survey Local Map and Built Up Areas
+    datasets and downloads them if they are not already present in the data
+    directory.
+
+    Parameters
+    ----------
+    repeat : bool, optional
+        If True, forces redownload of data, by default False
+    """
+    if (
+        os.path.exists(DATA_DIR.joinpath("os_roads.parquet"))
+        and os.path.exists(DATA_DIR.joinpath("os_buildings.parquet"))
+        and os.path.exists(DATA_DIR.joinpath("os_builtup.parquet"))
+        and not repeat
+    ):
+        logger.info("OS data found")
+        return
+
+    logger.info("Downloading OS data...")
+    BUILT_UP_AREAS_URL = "https://api.os.uk/downloads/v1/products/BuiltUpAreas/downloads?area=GB&format=GeoPackage&redirect"
+    BUILT_UP_ZIP_PATH = DATA_DIR.joinpath("built_up_areas.zip")
+    r = requests.get(
+        BUILT_UP_AREAS_URL,
+        allow_redirects=True,
+        timeout=1000,
+    )
+    with open(BUILT_UP_ZIP_PATH, "wb") as f:
+        f.write(r.content)
+
+    with zipfile.ZipFile(BUILT_UP_ZIP_PATH, "r") as z:
+        z.extract("os_open_built_up_areas.gpkg", DATA_DIR)
+    builtup = gpd.read_file(
+        DATA_DIR.joinpath("os_open_built_up_areas.gpkg"),
+        layer="os_open_built_up_areas",
+    ).to_crs(epsg=OUTPUT_EPSG)[["geometry"]]
+    builtup.to_parquet(DATA_DIR.joinpath("os_builtup.parquet"))
+
+    OS_LOCAL_MAP_URL = "https://api.os.uk/downloads/v1/products/OpenMapLocal/downloads?area=GB&format=GeoPackage&redirect"
+    OS_LOCAL_ZIP_PATH = DATA_DIR.joinpath("os_local_map.zip")
+    r = requests.get(
+        OS_LOCAL_MAP_URL,
+        allow_redirects=True,
+        timeout=10000,
+    )
+    with open(OS_LOCAL_ZIP_PATH, "wb") as f:
+        f.write(r.content)
+    with zipfile.ZipFile(OS_LOCAL_ZIP_PATH, "r") as z:
+        z.extract("Data/opmplc_gb.gpkg", DATA_DIR)
+    os.rename(
+        DATA_DIR.joinpath("Data", "opmplc_gb.gpkg"),
+        DATA_DIR.joinpath("opmplc_gb.gpkg"),
+    )
+    roads = gpd.read_file(
+        DATA_DIR.joinpath("opmplc_gb.gpkg"),
+        layer="road",
+        use_arrow=True,
+    ).to_crs(epsg=OUTPUT_EPSG)
+    roads.to_parquet(
+        DATA_DIR.joinpath("os_roads.parquet"), write_covering_bbox=True
+    )
+    buildings = gpd.read_file(
+        DATA_DIR.joinpath("opmplc_gb.gpkg"),
+        layer="building",
+        use_arrow=True,
+    ).to_crs(epsg=OUTPUT_EPSG)[["geometry"]]
+    buildings.to_parquet(
+        DATA_DIR.joinpath("os_buildings.parquet"), write_covering_bbox=True
+    )
+
+    # Remove unneeded files
+    os.remove(DATA_DIR.joinpath("os_open_built_up_areas.gpkg"))
+    os.remove(BUILT_UP_ZIP_PATH)
+    os.rmdir(DATA_DIR.joinpath("Data"))
+    os.remove(OS_LOCAL_ZIP_PATH)
+    os.remove(DATA_DIR.joinpath("opmplc_gb.gpkg"))
+    logger.info("OS data downloaded and saved")
+    return
+
+
 def get_data(
     repeat: bool = False,
 ) -> tuple[gpd.GeoDataFrame, pd.DataFrame, pd.DataFrame, gpd.GeoDataFrame]:
@@ -571,6 +678,7 @@ def get_data(
     annual = get_cso_annual_data(repeat)
     consents, determinands = get_consents_data(repeat)
     riversdf = get_rivers_data(repeat)
+    get_OS_data(repeat)
     return annual, consents, determinands, riversdf
 
 
@@ -594,7 +702,10 @@ def get_and_transform_data(
         not os.path.exists(DATA_DIR.joinpath("cso.parquet"))
         or not os.path.exists(DATA_DIR.joinpath("wwtw.parquet"))
         or not os.path.exists(DATA_DIR.joinpath("determinands.parquet"))
-        or not os.path.exists(DATA_DIR.joinpath("rivers.geojson"))
+        or not os.path.exists(DATA_DIR.joinpath("rivers.parquet"))
+        or not os.path.exists(DATA_DIR.joinpath("os_roads.parquet"))
+        or not os.path.exists(DATA_DIR.joinpath("os_buildings.parquet"))
+        or not os.path.exists(DATA_DIR.joinpath("os_builtup.parquet"))
         or repeat
     ):
         logger.info("Getting Data...")
@@ -617,9 +728,136 @@ def get_and_transform_data(
         determinands = pd.read_parquet(
             DATA_DIR.joinpath("determinands.parquet")
         )
-        riversdf = gpd.read_file(DATA_DIR.joinpath("rivers.geojson"))
+        riversdf = gpd.read_parquet(DATA_DIR.joinpath("rivers.parquet"))
         logger.info("Data loaded")
     return csos, wwtws, determinands, riversdf
+
+
+def get_crome_data(
+    mask: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
+    """
+    This function is meant to retrieve the Crop Map of England data
+    for the area defined by the mask.
+
+    Args:
+        mask (gpd.GeoDataFrame): A GeoDataFrame defining the area of interest.
+
+    Returns:
+        gpd.GeoDataFrame: A GeoDataframe with Crop category information
+    """
+    bbox = mask.to_crs(epsg=4326).total_bounds
+    bbox_str = (
+        f"{bbox[0]-0.0005},{bbox[1]-0.0005},{bbox[2]+0.0005},{bbox[3]+0.0005}"
+    )
+    crome = gpd.read_file(
+        r"https://environment.data.gov.uk/geoservices/datasets/"
+        r"a27312b5-d6c9-4710-ad5e-382d727c1b05/ogc/features/v1/collections"
+        r"/Crop_Map_of_England_2023/items?f=application%2Fgeo%2Bjson"
+        f"&bbox={bbox_str}&limit=1000000000",
+        mask=mask.to_crs(epsg=4326),
+    )
+    if mask.crs is not None:
+        crome = crome.to_crs(mask.crs)
+    crop_categories = pd.read_csv(
+        DATA_DIR.joinpath("crop_categories.csv"), index_col=0
+    )
+    crop_categories = crop_categories[crop_categories["category"] != "N/A"]
+    crome_cats = crome.join(
+        crop_categories[["crop_category"]],
+        on="lucode",
+        how="left",
+        validate="m:1",
+    )
+    return crome_cats
+
+
+def get_soil_data() -> gpd.GeoDataFrame:
+    """
+    Retrieves and transforms soil host data.
+
+    Returns:
+        gpd.GeoDataFrame: A GeoDataFrame with soil host data and categories.
+    """
+    soil_host = gpd.read_file(DATA_DIR.joinpath("soil_host_data.zip")).to_crs(
+        epsg=27700
+    )[["HOST", "geometry"]]
+
+    host_lookup = pd.read_csv(
+        DATA_DIR.joinpath("soil_lookup.csv"), index_col=0
+    )
+
+    soil_cats = soil_host.join(
+        host_lookup,
+        on="HOST",
+        how="left",
+        validate="m:1",
+    )
+    return soil_cats
+
+
+def get_rainfall_data() -> gpd.GeoDataFrame:
+    """
+    Retrieves and transforms annual average rainfall data.
+
+    Returns:
+        gpd.GeoDataFrame: Returns the class of the rainfall
+        based on the annual average rainfall.
+    """
+
+    rainfall = gpd.read_file(
+        "https://services.arcgis.com/Lq3V5RFuTBC9I7kv/"
+        "arcgis/rest/services/Annual_Precipitation_Observations"
+        "_1991_2020/FeatureServer/replicafilescache/"
+        "Annual_Precipitation_Observations_1991_2020"
+        "_3705384685436209699.geojson"
+    ).to_crs(epsg=27700)
+
+    def classify_rainfall(value):
+        if value > 1500:
+            return 5
+        elif value > 1200:
+            return 4
+        elif value > 900:
+            return 3
+        elif value > 700:
+            return 2
+        elif value > 600:
+            return 1
+        else:
+            return 0
+
+    rainfall["rainfall_category"] = rainfall["pr"].apply(classify_rainfall)
+    return rainfall
+
+
+def get_land_cover_data(mask: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """
+    Retrieves and transforms land cover data for the area defined by the mask.
+
+    Args:
+        mask (gpd.GeoDataFrame): A GeoDataFrame defining the area of interest.
+
+    Returns:
+        gpd.GeoDataFrame: A GeoDataFrame with land cover data
+    """
+    logger.info("Obtaining land cover data...")
+    crome = get_crome_data(mask)
+    soil = get_soil_data()
+    rain = get_rainfall_data()
+    logger.info("Obtained the data")
+    combined = gpd.overlay(
+        crome,
+        soil[["geometry", "soil_category"]],
+        how="intersection",
+    )
+    final_combined = gpd.overlay(
+        combined,
+        rain[["geometry", "rainfall_category"]],
+        how="intersection",
+    )
+    logger.info("Land cover data transformed")
+    return final_combined
 
 
 if __name__ == "__main__":
@@ -629,6 +867,7 @@ if __name__ == "__main__":
     logger.info("Starting data processing...")
     try:
         _, _, _, _ = get_and_transform_data(True)
+        get_OS_data(True)
         logger.info("Data processing completed successfully.")
     except Exception as e:
         logger.critical(f"Data processing failed: {e}")
