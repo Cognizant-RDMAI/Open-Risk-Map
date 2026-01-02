@@ -251,14 +251,18 @@ def get_rivers_data(repeat: bool = False) -> gpd.GeoDataFrame:
         logger.info("Rivers data found")
         return gpd.read_parquet(DATA_DIR.joinpath("rivers.parquet"))
     logger.info("Downloading rivers data...")
+
+    header = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36"
+    } # For spoofing browser user agent
+
     try:
-        rivers = gpd.read_file(
+        req = requests.get(
             "https://openrivers.net/download/ORN_v2_GeoPackage.zip",
-            layer="ORN",
+            headers=header,
+            allow_redirects=True,
+            timeout=1000,
         )
-        rivers.to_crs(epsg=OUTPUT_EPSG, inplace=True)
-        rivers.to_parquet(DATA_DIR.joinpath("rivers.parquet"))
-        logger.info("Rivers data downloaded and transformed")
     except Exception as e:
         logger.error(
             f"Failed to download or transform rivers data: {e}, trying alternate method"
@@ -266,20 +270,21 @@ def get_rivers_data(repeat: bool = False) -> gpd.GeoDataFrame:
         try:
             req = requests.get(
                 "https://openrivers.net/download/ORN_v2_GeoPackage.zip",
+                headers=header,
                 allow_redirects=True,
                 timeout=1000,
                 verify=False,
             )
-            b = bytes(req.content)
-            with fiona.BytesCollection(b, layer="ORN") as f:
-                crs = f.crs
-                rivers = gpd.GeoDataFrame.from_features(f, crs=crs)
-            rivers = rivers.to_crs(epsg=OUTPUT_EPSG)
-            rivers.to_parquet(DATA_DIR.joinpath("rivers.parquet"))
-            logger.info("Rivers data downloaded and transformed")
         except Exception as e:
             logger.error(f"Alternate method failed: {e}")
             raise e
+    b = bytes(req.content)
+    with fiona.BytesCollection(b, layer="ORN") as f:
+        crs = f.crs
+        rivers = gpd.GeoDataFrame.from_features(f, crs=crs)
+    rivers = rivers.to_crs(epsg=OUTPUT_EPSG)
+    rivers.to_parquet(DATA_DIR.joinpath("rivers.parquet"))
+    logger.info("Rivers data downloaded and transformed")
     return rivers
 
 
