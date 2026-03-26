@@ -714,3 +714,12 @@ The model has a number of methodological limitations. This model is, by design, 
 
 - Output format
   - The output format is currently a static map. This is useful for visualising the risk, but it is not possible to extract the data for further analysis. Future work could include exporting the data in a format that can be used in GIS software or other analysis tools.
+  Disclaimer
+This document has been prepared by the RDMAI consortium and is intended for informational purposes only.
+ 
+The model described in this document is the product of an ongoing research and development project. It represents an early iteration and its outputs are preliminary. The model is not intended for use in production environments, regulatory reporting, environmental monitoring, or any decision-making in relation to public health, public policy, or commercial matters without independent validation and the acceptance of full liability by the user.
+ 
+All use of the model and its associated software is subject to the full terms set out in the model repository README, available at [https://github.com/Cognizant-RDMAI](https://github.com/Cognizant-RDMAI/Open-Risk-Map).
+
+Readers seeking technical detail on model performance, limitations, and data sources should refer to the accompanying Model Report. The RDMAI consortium and its members accept no liability for any outcomes arising from use of or reliance on the model or its outputs.
+
