@@ -51,6 +51,18 @@ River Deep Mountain AI is an innovation project funded by the Ofwat Innovation F
 
 The project consists of 6 core partners: Northumbrian Water, Cognizant Ocean, Xylem Inc., Water Research Centre Limited, The Rivers Trust and ADAS. The project is further supported by 6 water companies across the United Kingdom and Ireland.
 
+
+### Report Download
+Please download the Open Slurry Tank Detection Model Report [HERE](https://github.com/Cognizant-RDMAI/Open-Risk-Map/tree/main/docs).
+
+### Benchmark Download:
+
+River Deep Mountain AI models have been independently benchmarked by WRc and ADAS, against existing industry-standard tools. The benchmarking reports assess model performance, ‘ease-of-use’, time and cost requirements.Read the full report [here](https://github.com/Cognizant-RDMAI/Open-Risk-Map/tree/main/docs).
+
+### Whitepaper Download:
+
+Please download the whitepaper [here](https://github.com/Cognizant-RDMAI/Open-Risk-Map/tree/main/docs).
+
 ## Installation
 
 This project uses Python(>3.7). Install the required dependencies (preferably in a new virtual environment) using:
