@@ -53,7 +53,7 @@ The project consists of 6 core partners: Northumbrian Water, Cognizant Ocean, Xy
 
 
 ### Report Download
-Please download the Open Slurry Tank Detection Model Report [HERE](https://github.com/Cognizant-RDMAI/Open-Risk-Map/tree/main/docs).
+Please download the Open Risk Map Report [HERE](https://github.com/Cognizant-RDMAI/Open-Risk-Map/tree/main/docs).
 
 ### Benchmark Download:
 
